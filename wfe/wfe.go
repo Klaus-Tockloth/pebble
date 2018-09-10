@@ -28,6 +28,7 @@ import (
 	"github.com/jmhodges/clock"
 	"github.com/letsencrypt/pebble/acme"
 	"github.com/letsencrypt/pebble/ca"
+	"github.com/letsencrypt/pebble/cca"
 	"github.com/letsencrypt/pebble/core"
 	"github.com/letsencrypt/pebble/db"
 	"github.com/letsencrypt/pebble/va"
@@ -36,7 +37,9 @@ import (
 const (
 	// Note: We deliberately pick endpoint paths that differ from Boulder to
 	// exercise clients processing of the /directory response
-	directoryPath     = "/dir"
+	// ----- BEGIN CCA -----
+	directoryPath = "/directory"
+	// ----- BEGIN CCA -----
 	noncePath         = "/nonce-plz"
 	newAccountPath    = "/sign-me-up"
 	acctPath          = "/my-account/"
@@ -126,7 +129,13 @@ type WebFrontEndImpl struct {
 	clk             clock.Clock
 	va              *va.VAImpl
 	ca              *ca.CAImpl
-	strict          bool
+	// ----- BEGIN CCA -----
+	cca *cca.CCAImpl
+	// ----- END CCA -----
+	strict bool
+	// ----- BEGIN CCA -----
+	customCA bool
+	// ----- END CCA -----
 }
 
 const ToSURL = "data:text/plain,Do%20what%20thou%20wilt"
@@ -137,6 +146,9 @@ func New(
 	db *db.MemoryStore,
 	va *va.VAImpl,
 	ca *ca.CAImpl,
+	// ----- BEGIN CCA -----
+	cca *cca.CCAImpl,
+	// ----- END CCA -----
 	strict bool) WebFrontEndImpl {
 
 	// Read the % of good nonces that should be rejected as bad nonces from the
@@ -161,6 +173,17 @@ func New(
 	}
 	log.Printf("Configured to reject %d%% of good nonces", nonceErrPercent)
 
+	// ----- BEGIN CCA -----
+	// Read the PEBBLE_CA_CUSTOM environment variable string
+	customCAEnvironmentSetting := os.Getenv("PEBBLE_CA_CUSTOM")
+	customCA := false
+	switch customCAEnvironmentSetting {
+	case "1", "true", "True", "TRUE":
+		customCA = true
+		log.Printf("Configured to use Custom CA")
+	}
+	// ----- END CCA -----
+
 	return WebFrontEndImpl{
 		log:             log,
 		db:              db,
@@ -169,7 +192,13 @@ func New(
 		clk:             clk,
 		va:              va,
 		ca:              ca,
-		strict:          strict,
+		// ----- BEGIN CCA -----
+		cca: cca,
+		// ----- END CCA -----
+		strict: strict,
+		// ----- BEGIN CCA -----
+		customCA: customCA,
+		// ----- END CCA -----
 	}
 }
 
@@ -194,6 +223,17 @@ func (wfe *WebFrontEndImpl) HandleFunc(
 	defaultHandler := http.StripPrefix(pattern,
 		&topHandler{
 			wfe: wfeHandlerFunc(func(ctx context.Context, logEvent *requestEvent, response http.ResponseWriter, request *http.Request) {
+				/*
+					// ----- BEGIN CCA -----
+					// dump client request (header + body)
+					requestDump, err := httputil.DumpRequest(request, true)
+					if err != nil {
+						wfe.log.Printf("error <%v> at httputil.DumpRequest()\n", err)
+					} else {
+						wfe.log.Printf("requestDump = %s\n", string(requestDump))
+					}
+					// ----- END CCA -----
+				*/
 				response.Header().Set("Replay-Nonce", wfe.nonce.createNonce())
 
 				logEvent.Endpoint = pattern
@@ -1224,7 +1264,9 @@ func (wfe *WebFrontEndImpl) NewOrder(
 
 	// Get the stored order back from the DB. The memorystore will set the order's
 	// status for us.
-	storedOrder := wfe.db.GetOrderByID(order.ID)
+	// ----- BEGIN CCA -----
+	storedOrder := wfe.db.GetOrderByID(order.ID, wfe.customCA)
+	// ----- END CCA -----
 
 	orderURL := wfe.relativeEndpoint(request, fmt.Sprintf("%s%s", orderPath, storedOrder.ID))
 	response.Header().Add("Location", orderURL)
@@ -1270,11 +1312,22 @@ func (wfe *WebFrontEndImpl) orderForDisplay(
 
 	// If the order has a cert ID then set the certificate URL by constructing
 	// a relative path based on the HTTP request & the cert ID
-	if order.CertificateObject != nil {
-		result.Certificate = wfe.relativeEndpoint(
-			request,
-			certPath+order.CertificateObject.ID)
+
+	// ----- BEGIN CCA -----
+	if wfe.customCA {
+		// Custom CA
+		if order.CertificateObjectCCA != nil {
+			result.Certificate = wfe.relativeEndpoint(request, certPath+order.CertificateObjectCCA.SerialNumber)
+		}
+	} else {
+		// Internal CA
+		if order.CertificateObject != nil {
+			result.Certificate = wfe.relativeEndpoint(
+				request,
+				certPath+order.CertificateObject.ID)
+		}
 	}
+	// ----- END CCA -----
 
 	return result
 }
@@ -1287,7 +1340,9 @@ func (wfe *WebFrontEndImpl) Order(
 	request *http.Request) {
 
 	orderID := strings.TrimPrefix(request.URL.Path, orderPath)
-	order := wfe.db.GetOrderByID(orderID)
+	// ----- BEGIN CCA -----
+	order := wfe.db.GetOrderByID(orderID, wfe.customCA)
+	// ----- END CCA -----
 	if order == nil {
 		response.WriteHeader(http.StatusNotFound)
 		return
@@ -1324,7 +1379,9 @@ func (wfe *WebFrontEndImpl) FinalizeOrder(
 
 	// Find the order specified by the order ID
 	orderID := strings.TrimPrefix(request.URL.Path, orderFinalizePath)
-	existingOrder := wfe.db.GetOrderByID(orderID)
+	// ----- BEGIN CCA -----
+	existingOrder := wfe.db.GetOrderByID(orderID, wfe.customCA)
+	// ----- END CCA -----
 	if existingOrder == nil {
 		response.WriteHeader(http.StatusNotFound)
 		wfe.sendError(acme.NotFoundProblem(fmt.Sprintf(
@@ -1418,7 +1475,15 @@ func (wfe *WebFrontEndImpl) FinalizeOrder(
 
 	// Ask the CA to complete the order in a separate goroutine.
 	wfe.log.Printf("Order %s is fully authorized. Processing finalization", orderID)
-	go wfe.ca.CompleteOrder(existingOrder)
+	// ----- BEGIN CCA -----
+	if wfe.customCA {
+		// Custom CA
+		go wfe.cca.CompleteOrder(existingOrder)
+	} else {
+		// Internal CA
+		go wfe.ca.CompleteOrder(existingOrder)
+	}
+	// ----- END CCA -----
 
 	// Set the existingOrder to processing before displaying to the user
 	existingOrder.Status = acme.StatusProcessing
@@ -1752,15 +1817,31 @@ func (wfe *WebFrontEndImpl) Certificate(
 	request *http.Request) {
 
 	serial := strings.TrimPrefix(request.URL.Path, certPath)
-	cert := wfe.db.GetCertificateByID(serial)
-	if cert == nil {
-		response.WriteHeader(http.StatusNotFound)
-		return
-	}
+	// ----- BEGIN CCA -----
+	if wfe.customCA {
+		// Custom CA
+		cert := wfe.db.GetCertificateCCAByID(serial)
+		if cert == nil {
+			response.WriteHeader(http.StatusNotFound)
+			return
+		}
 
-	response.Header().Set("Content-Type", "application/pem-certificate-chain; charset=utf-8")
-	response.WriteHeader(http.StatusOK)
-	_, _ = response.Write(cert.Chain())
+		response.Header().Set("Content-Type", "application/pem-certificate-chain; charset=utf-8")
+		response.WriteHeader(http.StatusOK)
+		_, _ = response.Write([]byte(cert.Certificate))
+	} else {
+		// Internal CA
+		cert := wfe.db.GetCertificateByID(serial)
+		if cert == nil {
+			response.WriteHeader(http.StatusNotFound)
+			return
+		}
+
+		response.Header().Set("Content-Type", "application/pem-certificate-chain; charset=utf-8")
+		response.WriteHeader(http.StatusOK)
+		_, _ = response.Write(cert.Chain())
+	}
+	// ----- END CCA -----
 }
 
 func (wfe *WebFrontEndImpl) writeJsonResponse(response http.ResponseWriter, status int, v interface{}) error {

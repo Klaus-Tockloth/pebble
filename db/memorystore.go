@@ -26,7 +26,6 @@ func (e ExistingAccountError) Error() string {
 	return fmt.Sprintf("New public key is already in use by account %s", e.MatchingAccount.ID)
 }
 
-
 // Pebble keeps all of its various objects (accounts, orders, etc)
 // in-memory, not persisted anywhere. MemoryStore implements this in-memory
 // "database"
@@ -50,6 +49,10 @@ type MemoryStore struct {
 	challengesByID map[string]*core.Challenge
 
 	certificatesByID map[string]*core.Certificate
+
+	// ----- BEGIN CCA -----
+	certificatesCCAByID map[string]*core.CertificateCCA
+	// ----- END CCA -----
 }
 
 func NewMemoryStore(clk clock.Clock) *MemoryStore {
@@ -62,6 +65,9 @@ func NewMemoryStore(clk clock.Clock) *MemoryStore {
 		authorizationsByID: make(map[string]*core.Authorization),
 		challengesByID:     make(map[string]*core.Challenge),
 		certificatesByID:   make(map[string]*core.Certificate),
+		// ----- BEGIN CCA -----
+		certificatesCCAByID: make(map[string]*core.CertificateCCA),
+		// ----- END CCA -----
 	}
 }
 
@@ -174,12 +180,16 @@ func (m *MemoryStore) AddOrder(order *core.Order) (int, error) {
 	return len(m.ordersByID), nil
 }
 
-func (m *MemoryStore) GetOrderByID(id string) *core.Order {
+// ----- BEGIN CCA -----
+func (m *MemoryStore) GetOrderByID(id string, customCA bool) *core.Order {
+	// ----- END CCA -----
 	m.RLock()
 	defer m.RUnlock()
 
 	if order, ok := m.ordersByID[id]; ok {
-		orderStatus, err := order.GetStatus(m.clk)
+		// ----- BEGIN CCA -----
+		orderStatus, err := order.GetStatus(m.clk, customCA)
+		// ----- END CCA -----
 		if err != nil {
 			panic(err)
 		}
@@ -258,11 +268,44 @@ func (m *MemoryStore) AddCertificate(cert *core.Certificate) (int, error) {
 	return len(m.certificatesByID), nil
 }
 
+// ----- BEGIN CCA -----
+
+// AddCertificateCCA adds Custom CA certificate to memorystore
+func (m *MemoryStore) AddCertificateCCA(cert *core.CertificateCCA) error {
+	m.Lock()
+	defer m.Unlock()
+
+	certID := cert.SerialNumber
+	if len(certID) == 0 {
+		return fmt.Errorf("cert must have a non-empty ID to add to MemoryStore")
+	}
+
+	if _, present := m.certificatesCCAByID[certID]; present {
+		return fmt.Errorf("cert %q already exists", certID)
+	}
+
+	m.certificatesCCAByID[certID] = cert
+	return nil
+}
+
+// ----- END CCA -----
+
 func (m *MemoryStore) GetCertificateByID(id string) *core.Certificate {
 	m.RLock()
 	defer m.RUnlock()
 	return m.certificatesByID[id]
 }
+
+// ----- BEGIN CCA -----
+
+// GetCertificateCCAByID gets Custom CA certificate from memorystore
+func (m *MemoryStore) GetCertificateCCAByID(id string) *core.CertificateCCA {
+	m.RLock()
+	defer m.RUnlock()
+	return m.certificatesCCAByID[id]
+}
+
+// ----- END CCA -----
 
 // GetCertificateByDER loops over all certificates to find the one that matches the provided DER bytes.
 // This method is linear and it's not optimized to give you a quick response.

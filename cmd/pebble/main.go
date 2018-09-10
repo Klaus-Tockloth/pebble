@@ -10,6 +10,7 @@ import (
 
 	"github.com/jmhodges/clock"
 	"github.com/letsencrypt/pebble/ca"
+	"github.com/letsencrypt/pebble/cca"
 	"github.com/letsencrypt/pebble/cmd"
 	"github.com/letsencrypt/pebble/db"
 	"github.com/letsencrypt/pebble/va"
@@ -48,6 +49,11 @@ func main() {
 	// Log to stdout
 	logger := log.New(os.Stdout, "Pebble ", log.LstdFlags)
 
+	// ----- BEGIN CCA -----
+	logger.SetFlags(log.Ldate | log.Ltime | log.Lmicroseconds | log.Lshortfile)
+	logger.Printf("Pebble with CCA support startet, Release 0.1.2 (dev), Date 2018/09/04\n")
+	// ----- END CCA -----
+
 	var c config
 	err := cmd.ReadConfigFile(*configFile, &c)
 	cmd.FailOnError(err, "Reading JSON config file into config structure")
@@ -59,9 +65,14 @@ func main() {
 	clk := clock.New()
 	db := db.NewMemoryStore(clk)
 	ca := ca.New(logger, db)
+	// ----- BEGIN CCA -----
+	cca := cca.New(logger, db)
+	// ----- END CCA -----
 	va := va.New(logger, clk, c.Pebble.HTTPPort, c.Pebble.TLSPort, *strictMode)
 
-	wfe := wfe.New(logger, clk, db, va, ca, *strictMode)
+	// ----- BEGIN CCA -----
+	wfe := wfe.New(logger, clk, db, va, ca, cca, *strictMode)
+	// ----- END CCA -----
 	muxHandler := wfe.Handler()
 
 	logger.Printf("Pebble running, listening on: %s\n", c.Pebble.ListenAddress)

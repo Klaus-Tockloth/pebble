@@ -26,9 +26,14 @@ type Order struct {
 	AuthorizationObjects []*Authorization
 	BeganProcessing      bool
 	CertificateObject    *Certificate
+	// ----- BEGIN CCA -----
+	CertificateObjectCCA *CertificateCCA
+	// ----- END CCA -----
 }
 
-func (o *Order) GetStatus(clk clock.Clock) (string, error) {
+// ----- BEGIN CCA -----
+func (o *Order) GetStatus(clk clock.Clock, customCA bool) (string, error) {
+	// ----- END CCA -----
 	// Lock the order for reading
 	o.RLock()
 	defer o.RUnlock()
@@ -88,9 +93,20 @@ func (o *Order) GetStatus(clk clock.Clock) (string, error) {
 
 	// If the order is fully authorized and the certificate serial is set then the
 	// order is valid
-	if fullyAuthorized && o.CertificateObject != nil {
-		return acme.StatusValid, nil
+
+	// ----- BEGIN CCA -----
+	if customCA {
+		// Custom CA
+		if fullyAuthorized && o.CertificateObjectCCA != nil {
+			return acme.StatusValid, nil
+		}
+	} else {
+		// Internal CA
+		if fullyAuthorized && o.CertificateObject != nil {
+			return acme.StatusValid, nil
+		}
 	}
+	// ----- END CCA -----
 
 	// If the order is fully authorized, and we have began processing it, then the
 	// order is processing.
@@ -151,6 +167,20 @@ type Certificate struct {
 	Issuer    *Certificate
 	AccountID string
 }
+
+// ----- BEGIN CCA -----
+
+// CertificateCCA defines Custom-CA object
+type CertificateCCA struct {
+	Cn              string `json:"cn"`
+	SerialNumber    string `json:"serialNumber"`
+	ValidFrom       string `json:"validFrom"`
+	ValidTo         string `json:"validTo"`
+	CertificateType string `json:"certificateType"`
+	Certificate     string `json:"certificate"`
+}
+
+// ----- END CCA -----
 
 func (c Certificate) PEM() []byte {
 	var buf bytes.Buffer
