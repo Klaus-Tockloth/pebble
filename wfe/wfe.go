@@ -269,7 +269,7 @@ func (wfe *WebFrontEndImpl) sendError(prob *acme.ProblemDetails, response http.R
 
 	response.Header().Set("Content-Type", "application/problem+json; charset=utf-8")
 	response.WriteHeader(prob.HTTPStatus)
-	response.Write(problemDoc)
+	_, _ = response.Write(problemDoc)
 }
 
 func (wfe *WebFrontEndImpl) RootCert(
@@ -331,7 +331,7 @@ func (wfe *WebFrontEndImpl) Directory(
 		return
 	}
 
-	response.Write(relDir)
+	_, _ = response.Write(relDir)
 }
 
 func (wfe *WebFrontEndImpl) relativeDirectory(request *http.Request, directory map[string]string) ([]byte, error) {
@@ -577,7 +577,9 @@ func (wfe *WebFrontEndImpl) verifyPOST(
 func (wfe *WebFrontEndImpl) verifyJWSSignatureAndAlgorithm(
 	pubKey *jose.JSONWebKey,
 	parsedJWS *jose.JSONWebSignature) ([]byte, error) {
-	// TODO(@cpu): `checkAlgorithm()`
+	if err := checkAlgorithm(pubKey, parsedJWS); err != nil {
+		return nil, err
+	}
 
 	payload, err := parsedJWS.Verify(pubKey)
 	if err != nil {
@@ -658,7 +660,7 @@ func (wfe *WebFrontEndImpl) verifyContacts(acct acme.Account) *acme.ProblemDetai
 	contacts := acct.Contact
 
 	// Providing no Contacts is perfectly acceptable
-	if contacts == nil || len(contacts) == 0 {
+	if len(contacts) == 0 {
 		return nil
 	}
 
@@ -938,7 +940,7 @@ func (wfe *WebFrontEndImpl) NewAccount(
 		return
 	}
 
-	if newAcctReq.ToSAgreed == false {
+	if !newAcctReq.ToSAgreed {
 		response.Header().Add("Link", link(ToSURL, "terms-of-service"))
 		wfe.sendError(
 			acme.AgreementRequiredProblem(
@@ -2060,8 +2062,14 @@ func (wfe *WebFrontEndImpl) processRevocation(
 
 	cert := wfe.db.GetCertificateByDER(derBytes)
 	if cert == nil {
-		return acme.MalformedProblem(
-			"Unable to find specified certificate. It may already be revoked")
+		cert := wfe.db.GetRevokedCertificateByDER(derBytes)
+		if cert != nil {
+			return acme.AlreadyRevokedProblem(
+				"Certificate has already been revoked.")
+		} else {
+			return acme.MalformedProblem(
+				"Unable to find specified certificate.")
+		}
 	}
 
 	if prob := authorizedToRevoke(cert); prob != nil {

@@ -53,6 +53,7 @@ type MemoryStore struct {
 	// ----- BEGIN CCA -----
 	certificatesCCAByID map[string]*core.CertificateCCA
 	// ----- END CCA -----
+	revokedCertificatesByID map[string]*core.Certificate
 }
 
 func NewMemoryStore(clk clock.Clock) *MemoryStore {
@@ -68,6 +69,7 @@ func NewMemoryStore(clk clock.Clock) *MemoryStore {
 		// ----- BEGIN CCA -----
 		certificatesCCAByID: make(map[string]*core.CertificateCCA),
 		// ----- END CCA -----
+		revokedCertificatesByID: make(map[string]*core.Certificate),
 	}
 }
 
@@ -263,6 +265,9 @@ func (m *MemoryStore) AddCertificate(cert *core.Certificate) (int, error) {
 	if _, present := m.certificatesByID[certID]; present {
 		return 0, fmt.Errorf("cert %q already exists", certID)
 	}
+	if _, present := m.revokedCertificatesByID[certID]; present {
+		return 0, fmt.Errorf("cert %q already exists (and is revoked)", certID)
+	}
 
 	m.certificatesByID[certID] = cert
 	return len(m.certificatesByID), nil
@@ -321,9 +326,24 @@ func (m *MemoryStore) GetCertificateByDER(der []byte) *core.Certificate {
 	return nil
 }
 
+// GetCertificateByDER loops over all revoked certificates to find the one that matches the provided
+// DER bytes. This method is linear and it's not optimized to give you a quick response.
+func (m *MemoryStore) GetRevokedCertificateByDER(der []byte) *core.Certificate {
+	m.RLock()
+	defer m.RUnlock()
+	for _, c := range m.revokedCertificatesByID {
+		if reflect.DeepEqual(c.DER, der) {
+			return c
+		}
+	}
+
+	return nil
+}
+
 func (m *MemoryStore) RevokeCertificate(cert *core.Certificate) {
 	m.Lock()
 	defer m.Unlock()
+	m.revokedCertificatesByID[cert.ID] = cert
 	delete(m.certificatesByID, cert.ID)
 }
 
